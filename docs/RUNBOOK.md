@@ -5,6 +5,13 @@
 
 ---
 
+## Stack validée — 01/06/2026
+
+- `docker compose up -d` → 10 services Up
+- PostgreSQL ✅ 13 tables | Redis ✅ PONG | MinIO ✅ 3 buckets | Airflow ✅
+
+---
+
 ## Incidents Phase 1 — Airflow / Batch
 
 ### INC-01 — DAG bloqué en "running" depuis > 30 minutes
