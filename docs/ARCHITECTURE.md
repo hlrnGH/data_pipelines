@@ -36,12 +36,17 @@ graph TD
 
 ### ETL vs ELT — Mapping par pipeline
 
-| Pipeline | Approche | Justification |
-|----------|----------|---------------|
-| catalog_ingestion | ETL | ... |
-| streaming_events | ... | ... |
-| aggregation | ... | ... |
-| streaming_trends (Spark) | ... | ... |
+| Pipeline                   | Approche | Justification                                                                                                             |
+| -------------------------- | -------- | ------------------------------------------------------------------------------------------------------------------------- |
+| `catalog_ingestion`        | **ETL**  | Extract depuis MinIO → Transform (validation, normalisation) → Load PostgreSQL. Données nettoyées avant insertion.        |
+| `streaming_events`         | **ELT**  | Extract depuis Redis → Load brut dans PostgreSQL → Transform via SQL. La base fait le travail d'agrégation.               |
+| `aggregation`              | **ELT**  | Données déjà dans PostgreSQL → Transform par SQL (SUM, GROUP BY) → Load dans `daily_streams`. Transformation in-database. |
+| `streaming_trends` (Spark) | **ELT**  | Extract depuis Kafka → Load dans Spark → Transform (fenêtres, agrégats) → Write PostgreSQL/Redis.                         |
+| `dlq_reprocessing`         | **ETL**  | Extract depuis `dead_letter_events` → Transform (correction) → Load dans la table cible. On corrige avant de réinsérer.   |
+
+**Règle du groupe :**
+- **ETL** quand les données doivent être validées avant d'entrer en base
+- **ELT** quand la transformation peut se faire en SQL ou via un moteur externe (Spark)
 
 ### Partitionnement Parquet
 
@@ -60,12 +65,12 @@ spotify-parquet/
 
 ### Topics Kafka — Stratégie de partitionnement
 
-| Topic | Partitions | Clé | Justification |
-|-------|-----------|-----|---------------|
-| listening_events | 6 | user_id | ... |
-| p2p_network_events | 6 | peer_id | ... |
-| catalog_updates | 3 | track_id | ... |
-| fraud_alerts | 3 | user_id | ... |
+| Topic              | Partitions | Clé      | Justification |
+| ------------------ | ---------- | -------- | ------------- |
+| listening_events   | 6          | user_id  | ...           |
+| p2p_network_events | 6          | peer_id  | ...           |
+| catalog_updates    | 3          | track_id | ...           |
+| fraud_alerts       | 3          | user_id  | ...           |
 
 **Pourquoi `user_id` comme clé pour `listening_events` ?**
 → À compléter
