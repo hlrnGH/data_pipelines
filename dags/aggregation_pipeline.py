@@ -80,6 +80,7 @@ with DAG(
         timeout=3600,
         poke_interval=60,
         mode="reschedule",
+        soft_fail=True,  # si streaming_events n'a pas tourné, on skip plutôt que d'échouer
     )
 
     @task(task_id="compute_top_tracks")
