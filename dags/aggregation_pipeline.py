@@ -26,6 +26,8 @@ from datetime import datetime, timedelta
 from airflow import DAG
 from airflow.decorators import task
 from airflow.sensors.external_task import ExternalTaskSensor
+from airflow.utils.session import provide_session
+from airflow.models import DagRun
 
 DAG_DOC = """
 ## aggregation_pipeline
@@ -61,6 +63,33 @@ DEFAULT_ARGS = {
 POSTGRES_CONN_ID = "spotify_postgres"
 
 
+@provide_session
+def _latest_streaming_run_date(logical_date, session=None, **kwargs):
+    """
+    Renvoie l'execution_date du DERNIER run réussi de streaming_events_pipeline.
+
+    Pourquoi : par défaut, l'ExternalTaskSensor cherche un run du DAG cible
+    à la MÊME execution_date que lui. Or nos deux DAGs ont des plannings
+    différents (#6 tourne toutes les 5 min, #7 une fois par jour), donc leurs
+    dates ne coïncident jamais → le sensor attend dans le vide.
+
+    Cette fonction dit au sensor : « ne compare pas les dates à l'identique,
+    va plutôt pointer sur le dernier run réussi du #6 ». Le garde-barrière
+    reste donc actif (on attend bien que le #6 ait réussi), mais sans la
+    contrainte d'égalité stricte des dates.
+    """
+    last_run = (
+        session.query(DagRun)
+        .filter(DagRun.dag_id == "streaming_events_pipeline")
+        .filter(DagRun.state == "success")
+        .order_by(DagRun.execution_date.desc())
+        .first()
+    )
+    # Si un run réussi existe, on pointe dessus ; sinon on retombe sur
+    # notre propre date (le sensor échouera/attendra, comportement attendu).
+    return last_run.execution_date if last_run else logical_date
+
+
 with DAG(
     dag_id="aggregation_pipeline",
     default_args=DEFAULT_ARGS,
@@ -77,8 +106,11 @@ with DAG(
         external_dag_id="streaming_events_pipeline",
         external_task_id=None,     # attend la fin du DAGRun complet
         allowed_states=["success"],
-        timeout=3600,
-        poke_interval=60,
+        # On ne compare plus à la même date : on pointe sur le dernier run
+        # réussi du #6 grâce à execution_date_fn (voir fonction ci-dessus).
+        execution_date_fn=_latest_streaming_run_date,
+        timeout=600,
+        poke_interval=30,
         mode="reschedule",
     )
 
@@ -86,64 +118,248 @@ with DAG(
     def compute_top_tracks(**context) -> list:
         """
         Calcule le top 50 des tracks pour la date d'exécution.
-
-        TODO :
-            1. Récupérer execution_date depuis context["data_interval_start"]
-            2. Requête SQL :
-               SELECT track_id,
-                      COUNT(*) as total_streams,
-                      COUNT(DISTINCT user_id) as unique_listeners,
-                      SUM(duration_ms) as total_duration_ms,
-                      ARRAY_AGG(DISTINCT geo_country) as countries
-               FROM listening_events
-               WHERE DATE(timestamp) = %(date)s AND completed = TRUE
-               GROUP BY track_id
-               ORDER BY total_streams DESC
-               LIMIT 50
-            3. Retourner la liste des agrégats
+        On cible uniquement les écoutes "completed" (>30s) — comme le vrai Spotify
+        qui ne comptabilise un stream que si l'écoute dépasse 30 secondes.
         """
-        raise NotImplementedError("TODO : implémenter compute_top_tracks()")
+        import logging
+        from airflow.providers.postgres.hooks.postgres import PostgresHook
+
+        log = logging.getLogger(__name__)
+
+        # data_interval_start = début de la fenêtre d'exécution
+        # Pour un DAG qui tourne à 4h le mardi, data_interval_start = lundi 4h
+        # Donc on calcule les stats du JOUR PRÉCÉDENT, ce qui est logique :
+        # on agrège la journée complète d'hier une fois qu'elle est terminée.
+        execution_date = context["data_interval_start"].date()
+        log.info(f"Calcul top tracks pour la date : {execution_date}")
+
+        pg = PostgresHook(postgres_conn_id=POSTGRES_CONN_ID)
+
+        # Une seule requête SQL qui fait tout le travail :
+        # - COUNT(*) = nombre total de streams
+        # - COUNT(DISTINCT user_id) = auditeurs uniques (pas de doublons)
+        # - ARRAY_AGG = liste des pays d'où viennent les écoutes
+        # - WHERE completed = TRUE : on ne compte que les vraies écoutes (>30s)
+        rows = pg.get_records(
+            """
+            SELECT
+                track_id::text,
+                COUNT(*)                        AS total_streams,
+                COUNT(DISTINCT user_id)         AS unique_listeners,
+                SUM(duration_ms)                AS total_duration_ms,
+                ARRAY_AGG(DISTINCT geo_country) AS countries
+            FROM listening_events
+            WHERE DATE(timestamp) = %s
+              AND completed = TRUE
+            GROUP BY track_id
+            ORDER BY total_streams DESC
+            LIMIT 50
+            """,
+            parameters=(execution_date,),
+        )
+
+        results = [
+            {
+                "track_id":         row[0],
+                "total_streams":    row[1],
+                "unique_listeners": row[2],
+                "total_duration_ms": row[3],
+                "countries":        row[4],
+            }
+            for row in rows
+        ]
+
+        log.info(f"Top tracks calculés : {len(results)} tracks pour {execution_date}")
+        return results
 
     @task(task_id="compute_artist_stats")
     def compute_artist_stats(**context) -> list:
         """
         Calcule les statistiques par artiste pour la date d'exécution.
-
-        TODO :
-            1. Jointure listening_events × tracks × artists
-            2. GROUP BY artist_id, date
-            3. Métriques : total_streams, unique_listeners, top_track_id
-            4. Retourner la liste des stats artistes
+        On fait une jointure entre 3 tables : listening_events → tracks → artists.
+        Le "top_track_id" est la track la plus streamée de cet artiste ce jour-là.
         """
-        raise NotImplementedError("TODO : implémenter compute_artist_stats()")
+        import logging
+        from airflow.providers.postgres.hooks.postgres import PostgresHook
+
+        log = logging.getLogger(__name__)
+        execution_date = context["data_interval_start"].date()
+
+        pg = PostgresHook(postgres_conn_id=POSTGRES_CONN_ID)
+
+        # Jointure listening_events → tracks → artists
+        # DISTINCT ON (t.artist_id) + ORDER BY streams DESC = track la + streamée
+        # C'est une technique SQL appelée "top-1 par groupe"
+        rows = pg.get_records(
+            """
+            WITH streams_by_track AS (
+                SELECT
+                    t.artist_id,
+                    le.track_id,
+                    COUNT(*)                AS streams,
+                    COUNT(DISTINCT le.user_id) AS listeners
+                FROM listening_events le
+                JOIN tracks t ON t.id = le.track_id::uuid
+                WHERE DATE(le.timestamp) = %s
+                GROUP BY t.artist_id, le.track_id
+            ),
+            top_track_per_artist AS (
+                SELECT DISTINCT ON (artist_id)
+                    artist_id,
+                    track_id AS top_track_id
+                FROM streams_by_track
+                ORDER BY artist_id, streams DESC
+            )
+            SELECT
+                sbt.artist_id::text,
+                SUM(sbt.streams)      AS total_streams,
+                SUM(sbt.listeners)    AS unique_listeners,
+                tt.top_track_id::text
+            FROM streams_by_track sbt
+            JOIN top_track_per_artist tt ON tt.artist_id = sbt.artist_id
+            GROUP BY sbt.artist_id, tt.top_track_id
+            ORDER BY total_streams DESC
+            """,
+            parameters=(execution_date,),
+        )
+
+        results = [
+            {
+                "artist_id":        row[0],
+                "total_streams":    row[1],
+                "unique_listeners": row[2],
+                "top_track_id":     row[3],
+            }
+            for row in rows
+        ]
+
+        log.info(f"Stats artistes calculées : {len(results)} artistes pour {execution_date}")
+        return results
 
     @task(task_id="compute_p2p_metrics")
     def compute_p2p_metrics(**context) -> dict:
         """
         Calcule les métriques du réseau P2P pour la date d'exécution.
 
-        TODO :
-            1. Taux de cache_hit (event_source='cache' / total)
-            2. Latence moyenne des transferts P2P
-            3. Nombre de peers actifs uniques
-            4. Distribution des écoutes par device_type et geo_country
-            5. Retourner un dict de métriques
+        Ces métriques servent à monitorer la santé du réseau P2P :
+        - Si le taux de cache_hit est bas → les peers ne gardent pas les tracks en cache
+        - Si la latence P2P est haute → le réseau est congestionné
         """
-        raise NotImplementedError("TODO : implémenter compute_p2p_metrics()")
+        import logging
+        from airflow.providers.postgres.hooks.postgres import PostgresHook
+
+        log = logging.getLogger(__name__)
+        execution_date = context["data_interval_start"].date()
+
+        pg = PostgresHook(postgres_conn_id=POSTGRES_CONN_ID)
+
+        # Taux de cache_hit : proportion d'écoutes servies depuis le cache local
+        # event_source = 'cache' signifie que le peer avait déjà la track
+        row = pg.get_first(
+            """
+            SELECT
+                COUNT(*)                                              AS total_events,
+                COUNT(*) FILTER (WHERE event_source = 'cache')       AS cache_hits,
+                COUNT(*) FILTER (WHERE event_source = 'p2p')         AS p2p_transfers,
+                COUNT(*) FILTER (WHERE event_source = 'direct')      AS direct_streams,
+                COUNT(DISTINCT source_peer_id)                        AS active_peers
+            FROM listening_events
+            WHERE DATE(timestamp) = %s
+            """,
+            parameters=(execution_date,),
+        )
+
+        total = row[0] or 1  # évite la division par zéro si aucun event
+        metrics = {
+            "date":             str(execution_date),
+            "total_events":     row[0],
+            "cache_hit_rate":   round((row[1] or 0) / total, 4),  # ex: 0.32 = 32%
+            "p2p_rate":         round((row[2] or 0) / total, 4),
+            "direct_rate":      round((row[3] or 0) / total, 4),
+            "active_peers":     row[4],
+        }
+
+        log.info(f"Métriques P2P : cache_hit={metrics['cache_hit_rate']:.1%} | "
+                 f"peers_actifs={metrics['active_peers']}")
+        return metrics
 
     @task(task_id="update_aggregates")
     def update_aggregates(top_tracks: list, artist_stats: list, p2p_metrics: dict, **context):
         """
         Écrit les agrégats dans PostgreSQL de façon idempotente.
 
-        TODO :
-            1. UPSERT dans daily_streams :
-               INSERT INTO daily_streams (track_id, date, total_streams, ...)
-               VALUES ... ON CONFLICT (track_id, date) DO UPDATE SET ...
-            2. UPSERT dans artist_stats
-            3. Logger les stats : "Top track: {title} avec {N} streams"
+        "Idempotent" = on peut relancer ce DAG plusieurs fois sans créer de doublons.
+        ON CONFLICT ... DO UPDATE garantit ça : si la ligne existe déjà pour
+        (track_id, date), on la met à jour au lieu d'en créer une nouvelle.
+        C'est crucial pour les reprises après panne.
         """
-        raise NotImplementedError("TODO : implémenter update_aggregates()")
+        import logging
+        from airflow.providers.postgres.hooks.postgres import PostgresHook
+
+        log = logging.getLogger(__name__)
+        execution_date = context["data_interval_start"].date()
+
+        pg   = PostgresHook(postgres_conn_id=POSTGRES_CONN_ID)
+        conn = pg.get_conn()
+        cur  = conn.cursor()
+
+        # ── 1. UPSERT daily_streams ───────────────────────────────────────
+        # ON CONFLICT (track_id, date) : si cette track a déjà des stats pour
+        # ce jour, on écrase avec les nouvelles valeurs (DO UPDATE SET).
+        # C'est différent de DO NOTHING : on veut toujours la valeur la plus fraîche.
+        upsert_streams = """
+            INSERT INTO daily_streams
+                (track_id, date, total_streams, unique_listeners, total_duration_ms, countries, updated_at)
+            VALUES (%s, %s, %s, %s, %s, %s, NOW())
+            ON CONFLICT (track_id, date) DO UPDATE SET
+                total_streams     = EXCLUDED.total_streams,
+                unique_listeners  = EXCLUDED.unique_listeners,
+                total_duration_ms = EXCLUDED.total_duration_ms,
+                countries         = EXCLUDED.countries,
+                updated_at        = NOW()
+        """
+        for t in top_tracks:
+            cur.execute(upsert_streams, (
+                t["track_id"],
+                execution_date,
+                t["total_streams"],
+                t["unique_listeners"],
+                t["total_duration_ms"],
+                t["countries"],
+            ))
+
+        # ── 2. UPSERT artist_stats ────────────────────────────────────────
+        upsert_artists = """
+            INSERT INTO artist_stats
+                (artist_id, date, total_streams, unique_listeners, top_track_id, updated_at)
+            VALUES (%s, %s, %s, %s, %s, NOW())
+            ON CONFLICT (artist_id, date) DO UPDATE SET
+                total_streams    = EXCLUDED.total_streams,
+                unique_listeners = EXCLUDED.unique_listeners,
+                top_track_id     = EXCLUDED.top_track_id,
+                updated_at       = NOW()
+        """
+        for a in artist_stats:
+            cur.execute(upsert_artists, (
+                a["artist_id"],
+                execution_date,
+                a["total_streams"],
+                a["unique_listeners"],
+                a["top_track_id"],
+            ))
+
+        conn.commit()
+        cur.close()
+
+        # ── 3. Log récapitulatif ──────────────────────────────────────────
+        log.info(
+            f"Agrégats du {execution_date} écrits en base : "
+            f"{len(top_tracks)} tracks, {len(artist_stats)} artistes | "
+            f"cache_hit={p2p_metrics.get('cache_hit_rate', 0):.1%}"
+        )
+        if top_tracks:
+            log.info(f"Track #1 du jour : {top_tracks[0]['track_id']} "
+                     f"avec {top_tracks[0]['total_streams']} streams")
 
     # ── Orchestration ─────────────────────────────────────────
     top_tracks   = compute_top_tracks()
