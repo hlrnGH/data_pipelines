@@ -160,14 +160,25 @@ class P2PSimulator:
         """
         track = random.choice(SAMPLE_TRACKS)
 
-        # TODO : compléter ici
+        # On tire une durée d'écoute réaliste :
+        # minimum 30 secondes, maximum = durée totale du morceau
+        duration_ms = random.randint(30_000, track["duration_ms"])
+
+        # Un stream est « completed » si l'utilisateur a écouté au moins 30s
+        # C'est le seuil utilisé par Spotify pour comptabiliser un stream payant
+        completed = duration_ms >= 30_000
+
         event = {
-            "event_id":    str(uuid.uuid4()),
-            "user_id":     random.choice(SAMPLE_USERS),
-            "track_id":    track["id"],
-            "source_peer": random.choice(self.active_peers),
-            "timestamp":   datetime.utcnow().isoformat() + "Z",
-            # À compléter...
+            "event_id":     str(uuid.uuid4()),
+            "user_id":      random.choice(SAMPLE_USERS),
+            "track_id":     track["id"],
+            "source_peer":  random.choice(self.active_peers),
+            "timestamp":    datetime.utcnow().isoformat() + "Z",
+            "duration_ms":  duration_ms,
+            "device_type":  random.choice(DEVICE_TYPES),
+            "geo_country":  random.choice(GEO_COUNTRIES),
+            "completed":    completed,
+            "event_source": random.choice(EVENT_SOURCES),
         }
 
         # Mode fraud (Phase 2) — décommenter
@@ -199,14 +210,61 @@ class P2PSimulator:
             "chunk_transfer", "cache_hit", "cache_miss"
         ])
 
-        # TODO : compléter selon event_type
-        event = {
+        peer_id = random.choice(self.active_peers)
+        base = {
             "event_id":   str(uuid.uuid4()),
             "event_type": event_type,
-            "peer_id":    random.choice(self.active_peers),
+            "peer_id":    peer_id,
             "timestamp":  datetime.utcnow().isoformat() + "Z",
-            # À compléter...
         }
+
+        if event_type == "peer_connect":
+            # Un nouveau peer rejoint le réseau P2P
+            # On simule son IP et le nombre de tracks qu'il partage
+            extra = {
+                "remote_ip":     f"10.{random.randint(0,255)}.{random.randint(0,255)}.{random.randint(1,254)}",
+                "shared_tracks": random.randint(50, 500),
+            }
+
+        elif event_type == "peer_disconnect":
+            # Un peer quitte le réseau
+            # session_duration_s = combien de temps il est resté connecté
+            extra = {
+                "session_duration_s": random.randint(30, 7200),
+                "bytes_uploaded":     random.randint(0, 50_000_000),
+            }
+
+        elif event_type == "chunk_transfer":
+            # Transfert d'un morceau (ou d'un fragment) entre deux peers
+            # target_peer ≠ source_peer pour que le transfert ait du sens
+            other_peers = [p for p in self.active_peers if p != peer_id]
+            target = random.choice(other_peers) if other_peers else peer_id
+            extra = {
+                "target_peer_id":  target,
+                "track_id":        random.choice(SAMPLE_TRACKS)["id"],
+                "chunk_size_bytes": random.randint(32_768, 262_144),  # 32 KB → 256 KB
+                "transfer_ms":     random.randint(10, 500),
+            }
+
+        elif event_type == "cache_hit":
+            # Le morceau demandé était déjà dans le cache local du peer
+            # response_time_ms très faible (lecture locale)
+            extra = {
+                "track_id":        random.choice(SAMPLE_TRACKS)["id"],
+                "response_time_ms": random.randint(1, 20),
+            }
+
+        else:  # cache_miss
+            # Morceau absent du cache → doit être téléchargé depuis un autre peer
+            other_peers = [p for p in self.active_peers if p != peer_id]
+            fallback = random.choice(other_peers) if other_peers else peer_id
+            extra = {
+                "track_id":        random.choice(SAMPLE_TRACKS)["id"],
+                "fallback_peer_id": fallback,
+                "response_time_ms": random.randint(50, 800),
+            }
+
+        event = {**base, **extra}
         return event
 
     # ── Publication ──────────────────────────────────────────
@@ -226,7 +284,13 @@ class P2PSimulator:
         Utiliser self.redis.publish(channel, payload)
         Gérer l'exception si Redis est indisponible (log + skip).
         """
-        raise NotImplementedError("TODO : implémenter _publish_to_redis()")
+        try:
+            self.redis.publish(channel, payload)
+        except redis.RedisError as e:
+            # On ne plante pas le simulateur si Redis est momentanément
+            # indisponible : on log et on continue. Les events sont perdus
+            # mais le simulateur reste vivant.
+            logger.warning(f"Redis indisponible, événement ignoré [{channel}] : {e}")
 
     # def _publish_to_kafka(self, topic: str, key: str, payload: str):
     #     """
