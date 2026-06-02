@@ -26,6 +26,8 @@ from datetime import datetime, timedelta
 from airflow import DAG
 from airflow.decorators import task
 from airflow.sensors.external_task import ExternalTaskSensor
+from airflow.utils.session import provide_session
+from airflow.models import DagRun
 
 DAG_DOC = """
 ## aggregation_pipeline
@@ -61,6 +63,33 @@ DEFAULT_ARGS = {
 POSTGRES_CONN_ID = "spotify_postgres"
 
 
+@provide_session
+def _latest_streaming_run_date(logical_date, session=None, **kwargs):
+    """
+    Renvoie l'execution_date du DERNIER run réussi de streaming_events_pipeline.
+
+    Pourquoi : par défaut, l'ExternalTaskSensor cherche un run du DAG cible
+    à la MÊME execution_date que lui. Or nos deux DAGs ont des plannings
+    différents (#6 tourne toutes les 5 min, #7 une fois par jour), donc leurs
+    dates ne coïncident jamais → le sensor attend dans le vide.
+
+    Cette fonction dit au sensor : « ne compare pas les dates à l'identique,
+    va plutôt pointer sur le dernier run réussi du #6 ». Le garde-barrière
+    reste donc actif (on attend bien que le #6 ait réussi), mais sans la
+    contrainte d'égalité stricte des dates.
+    """
+    last_run = (
+        session.query(DagRun)
+        .filter(DagRun.dag_id == "streaming_events_pipeline")
+        .filter(DagRun.state == "success")
+        .order_by(DagRun.execution_date.desc())
+        .first()
+    )
+    # Si un run réussi existe, on pointe dessus ; sinon on retombe sur
+    # notre propre date (le sensor échouera/attendra, comportement attendu).
+    return last_run.execution_date if last_run else logical_date
+
+
 with DAG(
     dag_id="aggregation_pipeline",
     default_args=DEFAULT_ARGS,
@@ -77,10 +106,12 @@ with DAG(
         external_dag_id="streaming_events_pipeline",
         external_task_id=None,     # attend la fin du DAGRun complet
         allowed_states=["success"],
-        timeout=3600,
-        poke_interval=60,
+        # On ne compare plus à la même date : on pointe sur le dernier run
+        # réussi du #6 grâce à execution_date_fn (voir fonction ci-dessus).
+        execution_date_fn=_latest_streaming_run_date,
+        timeout=600,
+        poke_interval=30,
         mode="reschedule",
-        soft_fail=True,  # si streaming_events n'a pas tourné, on skip plutôt que d'échouer
     )
 
     @task(task_id="compute_top_tracks")

@@ -17,6 +17,7 @@ TODO Phase 2 :  Activer _publish_to_kafka() et le mode fraude
 import argparse
 import json
 import logging
+import os
 import random
 import signal
 import time
@@ -43,6 +44,13 @@ logger = logging.getLogger("p2p_simulator")
 REDIS_URL = "redis://localhost:6379/1"
 KAFKA_BOOTSTRAP = "kafka-1:9092"       # Phase 2
 
+# Connexion PostgreSQL pour charger les vrais track_id du catalogue.
+# Le simulateur tourne hors Docker → on passe par localhost:5432.
+POSTGRES_DSN = os.getenv(
+    "SIMULATOR_POSTGRES_DSN",
+    "host=localhost port=5432 dbname=spotify user=spotify password=spotify",
+)
+
 TOPICS = {
     "listening":   "listening_events",
     "p2p_network": "p2p_network_events",
@@ -57,12 +65,52 @@ EVENT_SOURCES = ["p2p", "p2p", "p2p", "direct", "cache"]  # pondéré : 60% P2P
 # DONNÉES SIMULÉES
 # ─────────────────────────────────────────────────────────────
 
-# Ces UUIDs seront remplacés par les vrais IDs depuis PostgreSQL
-# Une fois votre base peuplée, charger dynamiquement avec _load_catalog()
+# Fallback : si PostgreSQL est vide ou injoignable, on garde des UUID aléatoires
+# pour que le simulateur fonctionne quand même (mais les events partiront en DLQ
+# côté #6 faute de matcher le catalogue). En usage normal, _load_catalog()
+# remplace cette liste par les vrais track_id de la base.
 SAMPLE_TRACKS = [
     {"id": str(uuid.uuid4()), "title": f"Track {i}", "duration_ms": random.randint(120000, 300000)}
     for i in range(50)
 ]
+
+
+def _load_catalog_from_postgres() -> list:
+    """
+    Charge les vrais track_id depuis PostgreSQL.
+
+    Pourquoi : le DAG #6 enrichit chaque event en joignant son track_id avec
+    la table `tracks`. Si le simulateur invente des UUID aléatoires, aucun ne
+    matche → tout part en DLQ (unknown_track). En lisant les vrais IDs ici,
+    les events référencent des tracks qui existent vraiment.
+
+    Retourne une liste de dicts {id, title, duration_ms}.
+    Si la connexion échoue ou si la base est vide, retourne [] (le caller
+    gardera alors les SAMPLE_TRACKS aléatoires en fallback).
+    """
+    try:
+        import psycopg2
+    except ImportError:
+        logger.warning("psycopg2 absent — catalogue non chargé, fallback UUID aléatoires")
+        return []
+
+    try:
+        conn = psycopg2.connect(POSTGRES_DSN)
+        with conn.cursor() as cur:
+            # On limite à 1000 tracks : largement assez pour simuler des écoutes
+            cur.execute("SELECT id::text, title, duration_ms FROM tracks LIMIT 1000")
+            rows = cur.fetchall()
+        conn.close()
+
+        catalog = [
+            {"id": row[0], "title": row[1], "duration_ms": int(row[2])}
+            for row in rows
+        ]
+        return catalog
+
+    except Exception as e:
+        logger.warning(f"Lecture catalogue PostgreSQL impossible ({e}) — fallback UUID aléatoires")
+        return []
 
 SAMPLE_USERS = [str(uuid.uuid4()) for _ in range(200)]
 SAMPLE_PEERS = [str(uuid.uuid4()) for _ in range(20)]
@@ -92,6 +140,17 @@ class P2PSimulator:
         self.mode = mode
         self.running = True
         self.event_count = 0
+
+        # Charge les vrais track_id du catalogue PostgreSQL.
+        # Si la base est vide/injoignable, on retombe sur les SAMPLE_TRACKS aléatoires.
+        catalog = _load_catalog_from_postgres()
+        if catalog:
+            self.tracks = catalog
+            logger.info(f"Catalogue chargé depuis PostgreSQL : {len(catalog)} tracks réels")
+        else:
+            self.tracks = SAMPLE_TRACKS
+            logger.warning("Catalogue PostgreSQL vide — utilisation de track_id aléatoires "
+                           "(les events partiront en DLQ côté #6)")
 
         # Connexion Redis
         self.redis = redis.from_url(REDIS_URL, decode_responses=True)
@@ -158,7 +217,7 @@ class P2PSimulator:
         En mode "late_events" (Phase 2) :
             - timestamp décalé de -5 à -30 minutes dans le passé
         """
-        track = random.choice(SAMPLE_TRACKS)
+        track = random.choice(self.tracks)
 
         # On tire une durée d'écoute réaliste :
         # minimum 30 secondes, maximum = durée totale du morceau
@@ -241,7 +300,7 @@ class P2PSimulator:
             target = random.choice(other_peers) if other_peers else peer_id
             extra = {
                 "target_peer_id":  target,
-                "track_id":        random.choice(SAMPLE_TRACKS)["id"],
+                "track_id":        random.choice(self.tracks)["id"],
                 "chunk_size_bytes": random.randint(32_768, 262_144),  # 32 KB → 256 KB
                 "transfer_ms":     random.randint(10, 500),
             }
@@ -250,7 +309,7 @@ class P2PSimulator:
             # Le morceau demandé était déjà dans le cache local du peer
             # response_time_ms très faible (lecture locale)
             extra = {
-                "track_id":        random.choice(SAMPLE_TRACKS)["id"],
+                "track_id":        random.choice(self.tracks)["id"],
                 "response_time_ms": random.randint(1, 20),
             }
 
@@ -259,7 +318,7 @@ class P2PSimulator:
             other_peers = [p for p in self.active_peers if p != peer_id]
             fallback = random.choice(other_peers) if other_peers else peer_id
             extra = {
-                "track_id":        random.choice(SAMPLE_TRACKS)["id"],
+                "track_id":        random.choice(self.tracks)["id"],
                 "fallback_peer_id": fallback,
                 "response_time_ms": random.randint(50, 800),
             }
@@ -280,12 +339,26 @@ class P2PSimulator:
 
     def _publish_to_redis(self, channel: str, payload: str):
         """
-        TODO : publier payload dans le channel Redis via pub/sub.
-        Utiliser self.redis.publish(channel, payload)
-        Gérer l'exception si Redis est indisponible (log + skip).
+        Publie le payload dans Redis de DEUX façons complémentaires :
+
+        1. PUB/SUB (self.redis.publish) : diffusion temps réel. Les abonnés
+           connectés au moment de la publication reçoivent l'event. Mais rien
+           n'est gardé : un abonné absent rate l'event (= radio en direct).
+
+        2. LIST (self.redis.lpush) : persistance. L'event est empilé dans une
+           liste Redis et y reste jusqu'à ce qu'un consommateur le dépile.
+           Le DAG batch streaming_events_pipeline (#6) lit cette liste avec
+           rpop — il récupère donc TOUS les events accumulés depuis son
+           dernier passage, même ceux publiés avant son démarrage.
+           lpush + rpop = file FIFO (premier entré, premier sorti).
+
+        On garde un plafond (LTRIM) pour éviter que la liste grossisse à
+        l'infini si aucun DAG ne la consomme.
         """
         try:
-            self.redis.publish(channel, payload)
+            self.redis.publish(channel, payload)          # 1. temps réel
+            self.redis.lpush(channel, payload)             # 2. persistance pour le batch
+            self.redis.ltrim(channel, 0, 99_999)           # garde au max 100 000 events
         except redis.RedisError as e:
             # On ne plante pas le simulateur si Redis est momentanément
             # indisponible : on log et on continue. Les events sont perdus
