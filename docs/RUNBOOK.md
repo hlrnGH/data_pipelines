@@ -3,12 +3,6 @@
 > Ce document doit être complété par votre groupe au fur et à mesure de la semaine.
 > Un bon runbook = ce dont vous auriez eu besoin pendant la panne.
 
----
-
-## Stack validée — 01/06/2026
-
-- `docker compose up -d` → 10 services Up
-- PostgreSQL ✅ 13 tables | Redis ✅ PONG | MinIO ✅ 3 buckets | Airflow ✅
 
 ---
 
@@ -36,7 +30,7 @@ docker exec airflow-scheduler airflow tasks clear <dag_id> -t <task_id> --yes
 docker compose restart airflow-worker
 ```
 
-**Cause probable :** → À compléter par votre groupe après avoir rencontré cet incident
+**Cause probable :** `aggregation_pipeline` utilise un `ExternalTaskSensor` qui attend que `streaming_events_pipeline` ait tourné avec succès. Si `streaming_events` n'est pas activé ou n'a pas encore de run réussi, le sensor attend indéfiniment. **Solution : toujours activer les DAGs dans l'ordre suivant :** `catalog_ingestion` → `streaming_events` → `aggregation` → `recommendation` → `dlq_reprocessing`.
 
 ---
 
@@ -59,7 +53,7 @@ SELECT max_conn FROM pg_settings WHERE name='max_connections';
 # SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE state='idle';
 ```
 
-**Prévention :** → À compléter (hint : Airflow pools)
+**Prévention :** Configurer les **Airflow Pools** (Admin → Pools dans l'UI) pour limiter la concurrence des tâches qui touchent PostgreSQL. Exemple : créer un pool `postgres_pool` avec 5 slots et assigner les tâches `load_to_postgres` à ce pool. Cela évite que plusieurs DAGs ouvrent trop de connexions simultanées.
 
 ---
 
@@ -78,6 +72,24 @@ curl http://localhost:9000/minio/health/live
 docker compose restart minio
 # Attendre 10s puis relancer le DAGRun
 ```
+
+---
+
+### INC-07 — Docker mount échoue au démarrage
+
+**Symptômes :** `error while creating mount source path: operation not permitted`
+
+**Cause :** Le projet est dans un dossier dont le chemin contient des espaces (ex: `Desktop/Data Pipelines Production/`). Docker sur Mac ne supporte pas les espaces dans les chemins de mount.
+
+**Résolution :**
+```bash
+docker compose down
+mv ~/Desktop/Data\ Pipelines\ Production/cours_hetic/data_pipelines ~/data_pipelines
+cd ~/data_pipelines
+docker compose up -d
+```
+
+**Prévention :** Toujours travailler dans un dossier sans espace dans le chemin.
 
 ---
 
