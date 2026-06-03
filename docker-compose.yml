@@ -164,81 +164,92 @@ services:
   # KAFKA (Phase 2 — décommenter jeudi matin)
   # ─────────────────────────────────────────
 
-  # kafka-1:
-  #   image: confluentinc/cp-kafka:7.6.0
-  #   hostname: kafka-1
-  #   environment:
-  #     KAFKA_NODE_ID: 1
-  #     KAFKA_PROCESS_ROLES: broker,controller
-  #     KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093
-  #     KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka-1:9092
-  #     KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
-  #     KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT
-  #     KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka-1:9093,2@kafka-2:9093,3@kafka-3:9093
-  #     KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 3
-  #     KAFKA_DEFAULT_REPLICATION_FACTOR: 3
-  #     KAFKA_MIN_INSYNC_REPLICAS: 2
-  #     KAFKA_CLUSTER_ID: spotify-cluster-001
-  #   volumes:
-  #     - kafka-1-data:/var/lib/kafka/data
-  #   ports:
-  #     - "9092:9092"
+  kafka-1:
+    image: confluentinc/cp-kafka:7.6.0
+    hostname: kafka-1
+    environment:
+       KAFKA_NODE_ID: 1
+       KAFKA_PROCESS_ROLES: broker,controller
+       KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093
+       KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka-1:9092
+       KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+       KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT
+       #KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka-1:9093,2@kafka-2:9093,3@kafka-3:9093
+       KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka-1:9093,2@kafka-2:9095,3@kafka-3:9097
+       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 3
+       KAFKA_DEFAULT_REPLICATION_FACTOR: 3
+       KAFKA_MIN_INSYNC_REPLICAS: 2
+       #KAFKA_CLUSTER_ID: spotify-cluster-001
+       CLUSTER_ID: mccdtQavTYu3vGON6qTkMg
+       KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+    volumes:
+       - kafka-1-data:/var/lib/kafka/data
+    ports:
+       - "9092:9092"
 
-  # kafka-2:
-  #   image: confluentinc/cp-kafka:7.6.0
-  #   hostname: kafka-2
-  #   environment:
-  #     KAFKA_NODE_ID: 2
-  #     KAFKA_PROCESS_ROLES: broker,controller
-  #     KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9094,CONTROLLER://0.0.0.0:9095
-  #     KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka-2:9094
-  #     KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
-  #     KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT
-  #     KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka-1:9093,2@kafka-2:9095,3@kafka-3:9097
-  #     KAFKA_CLUSTER_ID: spotify-cluster-001
-  #   volumes:
-  #     - kafka-2-data:/var/lib/kafka/data
+  kafka-2:
+    image: confluentinc/cp-kafka:7.6.0
+    hostname: kafka-2
+    environment:
+       KAFKA_NODE_ID: 2
+       KAFKA_PROCESS_ROLES: broker,controller
+       KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9094,CONTROLLER://0.0.0.0:9095
+       KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka-2:9094
+       KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+       KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT
+       KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka-1:9093,2@kafka-2:9095,3@kafka-3:9097
+       #KAFKA_CLUSTER_ID: spotify-cluster-001
+       CLUSTER_ID: mccdtQavTYu3vGON6qTkMg
+       KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+    volumes:
+       - kafka-2-data:/var/lib/kafka/data
 
-  # kafka-3:
-  #   image: confluentinc/cp-kafka:7.6.0
-  #   hostname: kafka-3
-  #   environment:
-  #     KAFKA_NODE_ID: 3
-  #     KAFKA_PROCESS_ROLES: broker,controller
-  #     KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9096,CONTROLLER://0.0.0.0:9097
-  #     KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka-3:9096
-  #     KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
-  #     KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT
-  #     KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka-1:9093,2@kafka-2:9095,3@kafka-3:9097
-  #     KAFKA_CLUSTER_ID: spotify-cluster-001
-  #   volumes:
-  #     - kafka-3-data:/var/lib/kafka/data
+  kafka-3:
+    image: confluentinc/cp-kafka:7.6.0
+    hostname: kafka-3
+    environment:
+       KAFKA_NODE_ID: 3
+       KAFKA_PROCESS_ROLES: broker,controller
+       KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9096,CONTROLLER://0.0.0.0:9097
+       KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka-3:9096
+       KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+       KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT
+       KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka-1:9093,2@kafka-2:9095,3@kafka-3:9097
+       #KAFKA_CLUSTER_ID: spotify-cluster-001
+       CLUSTER_ID: mccdtQavTYu3vGON6qTkMg
+       KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+    volumes:
+       - kafka-3-data:/var/lib/kafka/data
 
-  # kafka-ui:
-  #   image: provectuslabs/kafka-ui:latest
-  #   depends_on:
-  #     - kafka-1
-  #   ports:
-  #     - "8090:8080"
-  #   environment:
-  #     KAFKA_CLUSTERS_0_NAME: spotify-local
-  #     KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka-1:9092,kafka-2:9094,kafka-3:9096
+  kafka-ui:
+    image: provectuslabs/kafka-ui:latest
+    depends_on:
+       - kafka-1
+       - kafka-2
+       - kafka-3
+    ports:
+       - "8090:8080"
+    environment:
+       KAFKA_CLUSTERS_0_NAME: spotify-local
+       KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka-1:9092,kafka-2:9094,kafka-3:9096
 
-  # kafka-init:
-  #   image: confluentinc/cp-kafka:7.6.0
-  #   depends_on:
-  #     - kafka-1
-  #   entrypoint: >
-  #     /bin/sh -c "
-  #     sleep 15;
-  #     kafka-topics --create --if-not-exists --bootstrap-server kafka-1:9092 --topic listening_events --partitions 6 --replication-factor 3 --config retention.ms=604800000;
-  #     kafka-topics --create --if-not-exists --bootstrap-server kafka-1:9092 --topic p2p_network_events --partitions 6 --replication-factor 3;
-  #     kafka-topics --create --if-not-exists --bootstrap-server kafka-1:9092 --topic catalog_updates --partitions 3 --replication-factor 3 --config cleanup.policy=compact;
-  #     kafka-topics --create --if-not-exists --bootstrap-server kafka-1:9092 --topic enriched_events --partitions 6 --replication-factor 3;
-  #     kafka-topics --create --if-not-exists --bootstrap-server kafka-1:9092 --topic fraud_alerts --partitions 3 --replication-factor 3;
-  #     kafka-topics --create --if-not-exists --bootstrap-server kafka-1:9092 --topic late_listening_events --partitions 3 --replication-factor 3;
-  #     echo 'Topics Kafka créés';
-  #     "
+  kafka-init:
+    image: confluentinc/cp-kafka:7.6.0
+    depends_on:
+       - kafka-1
+       - kafka-2
+       - kafka-3
+    entrypoint: >
+       /bin/sh -c "
+       sleep 30;
+       kafka-topics --create --if-not-exists --bootstrap-server kafka-1:9092 --topic listening_events --partitions 6 --replication-factor 3 --config retention.ms=604800000;
+       kafka-topics --create --if-not-exists --bootstrap-server kafka-1:9092 --topic p2p_network_events --partitions 6 --replication-factor 3;
+       kafka-topics --create --if-not-exists --bootstrap-server kafka-1:9092 --topic catalog_updates --partitions 3 --replication-factor 3 --config cleanup.policy=compact;
+       kafka-topics --create --if-not-exists --bootstrap-server kafka-1:9092 --topic enriched_events --partitions 6 --replication-factor 3;
+       kafka-topics --create --if-not-exists --bootstrap-server kafka-1:9092 --topic fraud_alerts --partitions 3 --replication-factor 3;
+       kafka-topics --create --if-not-exists --bootstrap-server kafka-1:9092 --topic late_listening_events --partitions 3 --replication-factor 3;
+       echo 'Topics Kafka créés';
+       "
 
   # ─────────────────────────────────────────
   # SPARK (Phase 2 — décommenter jeudi matin)
@@ -272,6 +283,6 @@ volumes:
   postgres-data:
   minio-data:
   airflow-logs:
-  # kafka-1-data:
-  # kafka-2-data:
-  # kafka-3-data:
+  kafka-1-data:
+  kafka-2-data:
+  kafka-3-data:
