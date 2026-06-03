@@ -255,29 +255,29 @@ services:
   # SPARK (Phase 2 — décommenter jeudi matin)
   # ─────────────────────────────────────────
 
-  # spark-master:
-  #   image: bitnami/spark:3.5
-  #   environment:
-  #     SPARK_MODE: master
-  #     SPARK_MASTER_PORT: 7077
-  #     SPARK_MASTER_WEBUI_PORT: 8888
-  #   ports:
-  #     - "7077:7077"
-  #     - "8888:8888"
-  #   volumes:
-  #     - ./spark_jobs:/opt/spark-jobs
+  spark-master:
+    image: bitnamilegacy/spark:3.5.0
+    environment:
+      SPARK_MODE: master
+      SPARK_MASTER_PORT: 7077
+      SPARK_MASTER_WEBUI_PORT: 8888
+    ports:
+      - "7077:7077"
+      - "8888:8888"
+    volumes:
+      - ./spark_jobs:/opt/spark-jobs
 
-  # spark-worker-1:
-  #   image: bitnami/spark:3.5
-  #   environment:
-  #     SPARK_MODE: worker
-  #     SPARK_MASTER_URL: spark://spark-master:7077
-  #     SPARK_WORKER_MEMORY: 2G
-  #     SPARK_WORKER_CORES: 2
-  #   depends_on:
-  #     - spark-master
-  #   volumes:
-  #     - ./spark_jobs:/opt/spark-jobs
+  spark-worker-1:
+    image: bitnamilegacy/spark:3.5.0
+    environment:
+      SPARK_MODE: worker
+      SPARK_MASTER_URL: spark://spark-master:7077
+      SPARK_WORKER_MEMORY: 2G
+      SPARK_WORKER_CORES: 2
+    depends_on:
+      - spark-master
+    volumes:
+      - ./spark_jobs:/opt/spark-jobs
 
 volumes:
   postgres-data:
