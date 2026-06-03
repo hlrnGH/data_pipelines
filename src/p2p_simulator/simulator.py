@@ -28,7 +28,7 @@ from typing import Optional
 import redis
 
 # Phase 2 — décommenter quand Kafka est prêt
-# from confluent_kafka import Producer
+from confluent_kafka import Producer
 
 logging.basicConfig(
     level=logging.INFO,
@@ -41,7 +41,8 @@ logger = logging.getLogger("p2p_simulator")
 # CONFIGURATION
 # ─────────────────────────────────────────────────────────────
 
-REDIS_URL = "redis://localhost:6379/1"
+
+REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/1")
 KAFKA_BOOTSTRAP = "kafka-1:9092"       # Phase 2
 
 # Connexion PostgreSQL pour charger les vrais track_id du catalogue.
@@ -156,7 +157,11 @@ class P2PSimulator:
         self.redis = redis.from_url(REDIS_URL, decode_responses=True)
 
         # Phase 2 — Kafka producer
-        # self.kafka_producer = Producer({"bootstrap.servers": KAFKA_BOOTSTRAP})
+        self.kafka_producer = Producer({
+            "bootstrap.servers": KAFKA_BOOTSTRAP,
+            "acks": "all",
+            "enable.idempotence": True,
+        })
 
         # Peers actifs simulés
         self.active_peers = [str(uuid.uuid4()) for _ in range(n_peers)]
@@ -335,7 +340,7 @@ class P2PSimulator:
 
         self._publish_to_redis(channel, payload)
         # Phase 2 — décommenter
-        # self._publish_to_kafka(channel, event.get("user_id", ""), payload)
+        self._publish_to_kafka(channel, event.get("user_id", ""), payload)
 
     def _publish_to_redis(self, channel: str, payload: str):
         """
@@ -365,14 +370,31 @@ class P2PSimulator:
             # mais le simulateur reste vivant.
             logger.warning(f"Redis indisponible, événement ignoré [{channel}] : {e}")
 
-    # def _publish_to_kafka(self, topic: str, key: str, payload: str):
-    #     """
-    #     TODO Phase 2 : publier payload dans le topic Kafka.
-    #     - key     : utilisé pour le partitionnement (user_id ou peer_id)
-    #     - acks    : 'all' pour la durabilité
-    #     - Gérer le callback de confirmation (delivery_report)
-    #     """
-    #     raise NotImplementedError("TODO Phase 2 : implémenter _publish_to_kafka()")
+    def _publish_to_kafka(self, topic: str, key: str, payload: str):
+        """
+        Publie le payload dans Kafka avec garanties de durabilité.
+        - acks=all + idempotence : exactly-once sur le producteur
+        - key : user_id pour le partitionnement (tous les events
+        d'un même utilisateur → même partition)
+        """
+        def delivery_report(err, msg):
+            if err is not None:
+                logger.warning(f"Kafka delivery failed [{topic}] : {err}")
+            else:
+                logger.debug(f"Kafka delivery OK [{msg.topic()}] partition={msg.partition()}")
+
+        try:
+            self.kafka_producer.produce(
+                topic,
+                key=key.encode("utf-8") if key else None,
+                value=payload.encode("utf-8"),
+                callback=delivery_report,
+            )
+            self.kafka_producer.poll(0)
+        except Exception as e:
+            logger.warning(f"Kafka indisponible, événement ignoré [{topic}] : {e}")
+
+
 
     def _shutdown(self, signum, frame):
         logger.info(f"Arrêt du simulateur (signal {signum}) — {self.event_count} événements publiés")
