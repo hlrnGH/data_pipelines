@@ -98,18 +98,53 @@ def read_kafka_stream(spark: SparkSession):
     """
     Lit le topic Kafka `listening_events` en streaming.
 
-    TODO :
-        1. Utiliser spark.readStream.format("kafka")
-        2. Configurer kafka.bootstrap.servers, subscribe, startingOffsets
-        3. Caster la colonne "value" (bytes) en string
-        4. Parser le JSON avec from_json() et LISTENING_EVENT_SCHEMA
-        5. Caster la colonne "timestamp" (string ISO) en TimestampType
-        6. Renommer en "event_time" pour les fenêtres temporelles
-
-    Returns:
-        DataFrame streaming avec colonnes typées
+    Étapes :
+        1. Lecture du topic Kafka avec spark.readStream.
+        2. Conversion de la colonne Kafka `value` en string.
+        3. Désérialisation JSON avec LISTENING_EVENT_SCHEMA.
+        4. Conversion du timestamp ISO en TimestampType.
+        5. Création de la colonne `event_time` pour les futurs traitements window.
     """
-    raise NotImplementedError("TODO : implémenter read_kafka_stream()")
+    kafka_df = (
+        spark.readStream
+        .format("kafka")
+        .option("kafka.bootstrap.servers", KAFKA_BOOTSTRAP)
+        .option("subscribe", KAFKA_TOPIC)
+        .option("startingOffsets", "earliest")
+        .option("failOnDataLoss", "false")
+        .load()
+    )
+
+    parsed_df = (
+        kafka_df
+        .select(
+            F.col("key").cast("string").alias("kafka_key"),
+            F.col("value").cast("string").alias("json_payload"),
+            F.col("topic").alias("kafka_topic"),
+            F.col("partition").alias("kafka_partition"),
+            F.col("offset").alias("kafka_offset"),
+            F.col("timestamp").alias("kafka_timestamp"),
+        )
+        .withColumn("event", F.from_json(F.col("json_payload"), LISTENING_EVENT_SCHEMA))
+        .select(
+            "kafka_key",
+            "json_payload",
+            "kafka_topic",
+            "kafka_partition",
+            "kafka_offset",
+            "kafka_timestamp",
+            F.col("event.*"),
+        )
+        .withColumn(
+            "event_time",
+            F.to_timestamp(
+                F.regexp_replace(F.col("timestamp"), "Z$", ""),
+                "yyyy-MM-dd'T'HH:mm:ss.SSSSSS"
+            )
+        )
+    )
+
+    return parsed_df
 
 
 # ─────────────────────────────────────────────────────────────
@@ -167,12 +202,34 @@ def main():
     # Chargement du catalogue (jointure statique — Phase 2, seq 2.3)
     # catalog_df = spark.read.jdbc(POSTGRES_URL, "tracks", properties=POSTGRES_PROPS)
 
-    # Agrégations
-    query_top_tracks = compute_top_tracks_tumbling(events_df)
-    # query_genres     = compute_genre_listeners_sliding(events_df, catalog_df)
+    # Ticket #13 : validation de la lecture Kafka en console.
+    # Les agrégations top tracks / genres seront implémentées dans les tickets suivants.
+    query_kafka_console = (
+        events_df
+        .select(
+            "event_id",
+            "user_id",
+            "track_id",
+            "event_time",
+            "duration_ms",
+            "device_type",
+            "geo_country",
+            "completed",
+            "event_source",
+            "kafka_partition",
+            "kafka_offset",
+        )
+        .writeStream
+        .format("console")
+        .outputMode("append")
+        .option("truncate", "false")
+        .option("numRows", 20)
+        .option("checkpointLocation", CHECKPOINT_PATH)
+        .start()
+    )
 
     # Attendre l'arrêt gracieux
-    spark.streams.awaitAnyTermination()
+    query_kafka_console.awaitTermination()
 
 
 if __name__ == "__main__":
