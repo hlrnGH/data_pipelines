@@ -143,12 +143,17 @@ def read_kafka_stream(spark: SparkSession):
             F.col("event.*"),
         )
         .withColumn(
+            "ts_clean",
+            F.regexp_replace(F.col("timestamp"), "Z$", ""),
+        )
+        .withColumn(
             "event_time",
-            F.to_timestamp(
-                F.regexp_replace(F.col("timestamp"), "Z$", ""),
-                "yyyy-MM-dd'T'HH:mm:ss.SSSSSS",
+            F.coalesce(
+                F.to_timestamp(F.col("ts_clean"), "yyyy-MM-dd'T'HH:mm:ss.SSSSSS"),
+                F.to_timestamp(F.col("ts_clean"), "yyyy-MM-dd'T'HH:mm:ss"),
             ),
         )
+        .drop("ts_clean")
     )
 
     return parsed_df
@@ -184,7 +189,7 @@ def compute_top_tracks_tumbling(events_df):
         )
         .agg(
             F.count("*").alias("stream_count"),
-            F.countDistinct("user_id").alias("unique_listeners"),
+            F.approx_count_distinct("user_id").alias("unique_listeners"),
         )
         # On aplatit la structure window {start, end} en deux colonnes
         # pour qu'elles rentrent dans les colonnes de la table PostgreSQL.
@@ -199,22 +204,34 @@ def compute_top_tracks_tumbling(events_df):
 
     def write_batch_to_postgres(batch_df, batch_id):
         """
-        Appelé à chaque micro-batch. batch_df est un DataFrame fini
-        (statique) → on peut le traiter normalement.
+        Appelé à chaque micro-batch. batch_df est un DataFrame fini (statique).
 
-        Écriture idempotente : la clé primaire de realtime_top_tracks est
-        (window_start, track_id). Une même fenêtre peut être réécrite sur
-        plusieurs batches (outputMode update) → un simple append violerait
-        la contrainte d'unicité. On fait donc un UPSERT via psycopg2 :
-        INSERT ... ON CONFLICT (window_start, track_id) DO UPDATE.
+        Écriture idempotente : la PK de realtime_top_tracks est
+        (window_start, track_id). En outputMode("update"), une même fenêtre est
+        réémise à chaque batch tant qu'elle évolue → un simple append violerait
+        la PK. On fait donc un UPSERT via psycopg2 (installé dans le conteneur
+        Spark) : INSERT ... ON CONFLICT (window_start, track_id) DO UPDATE.
         """
         import psycopg2
+        from psycopg2.extras import execute_values
 
-        # Top 10 du batch courant, trié par nombre de streams
-        top10 = batch_df.orderBy(F.col("stream_count").desc()).limit(10).collect()
-        if not top10:
+        # On matérialise le top 10 du batch côté driver.
+        rows = batch_df.orderBy(F.col("stream_count").desc()).limit(10).collect()
+        if not rows:
             return
 
+        records = [
+            (
+                r["window_start"],
+                r["window_end"],
+                r["track_id"],
+                int(r["stream_count"]),
+                int(r["unique_listeners"]),
+            )
+            for r in rows
+        ]
+
+        # Le job tourne dans le réseau Docker → host "postgres".
         conn = psycopg2.connect(
             host="postgres",
             port=5432,
@@ -222,42 +239,35 @@ def compute_top_tracks_tumbling(events_df):
             user="spotify",
             password="spotify",
         )
-        cur = conn.cursor()
-        upsert = """
-            INSERT INTO realtime_top_tracks
-                (window_start, window_end, track_id, stream_count, unique_listeners, updated_at)
-            VALUES (%s, %s, %s, %s, %s, NOW())
-            ON CONFLICT (window_start, track_id) DO UPDATE SET
-                window_end       = EXCLUDED.window_end,
-                stream_count     = EXCLUDED.stream_count,
-                unique_listeners = EXCLUDED.unique_listeners,
-                updated_at       = NOW()
-        """
-        for row in top10:
-            cur.execute(
-                upsert,
-                (
-                    row["window_start"],
-                    row["window_end"],
-                    row["track_id"],
-                    row["stream_count"],
-                    row["unique_listeners"],
-                ),
-            )
-        conn.commit()
-        cur.close()
-        conn.close()
-        print(
-            f"[batch {batch_id}] {len(top10)} lignes upsertées dans realtime_top_tracks"
-        )
+        try:
+            with conn.cursor() as cur:
+                execute_values(
+                    cur,
+                    """
+                        INSERT INTO realtime_top_tracks
+                            (window_start, window_end, track_id,
+                            stream_count, unique_listeners, updated_at)
+                        VALUES %s
+                        ON CONFLICT (window_start, track_id) DO UPDATE SET
+                            window_end       = EXCLUDED.window_end,
+                            stream_count     = EXCLUDED.stream_count,
+                            unique_listeners = EXCLUDED.unique_listeners,
+                            updated_at       = NOW()
+                        """,
+                    records,
+                    template="(%s, %s, %s, %s, %s, NOW())",
+                )
+            conn.commit()
+        finally:
+            conn.close()
+
+        print(f"[batch {batch_id}] top 10 UPSERT dans realtime_top_tracks")
 
     query = (
-        aggregated.writeStream.outputMode(
-            "update"
-        )  # on met à jour les fenêtres au fil de l'eau
+        aggregated.writeStream.outputMode("update")
         .foreachBatch(write_batch_to_postgres)
         .option("checkpointLocation", f"{CHECKPOINT_PATH}/top_tracks")
-        .trigger(processingTime="30 seconds")  # un micro-batch toutes les 30s
+        .trigger(processingTime="30 seconds")
         .start()
     )
     return query
@@ -293,7 +303,7 @@ def compute_genre_listeners_sliding(events_df, catalog_df):
             F.col("genre"),
         )
         .agg(
-            F.countDistinct("user_id").alias("unique_listeners"),
+            F.approx_count_distinct("user_id").alias("unique_listeners"),
         )
         .select(
             F.col("window.start").alias("window_start"),
@@ -391,12 +401,16 @@ def main():
         .outputMode("append")
         .option("truncate", "false")
         .option("numRows", 20)
-        .option("checkpointLocation", CHECKPOINT_PATH)
+        .option("checkpointLocation", f"{CHECKPOINT_PATH}/console")
         .start()
     )
 
-    # Attendre l'arrêt gracieux
-    query_kafka_console.awaitTermination()
+    # Ticket #14 : les deux agrégations tournent EN PARALLÈLE de la console.
+    query_top_tracks = compute_top_tracks_tumbling(events_df)
+    query_genres = compute_genre_listeners_sliding(events_df, catalog_df)
+
+    # On attend l'arrêt de n'importe laquelle des 3 queries (toutes tournent en continu)
+    spark.streams.awaitAnyTermination()
 
 
 if __name__ == "__main__":

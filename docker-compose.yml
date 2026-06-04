@@ -170,10 +170,10 @@ services:
     environment:
        KAFKA_NODE_ID: 1
        KAFKA_PROCESS_ROLES: broker,controller
-       KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093
-       KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka-1:9092
+       KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093,EXTERNAL://0.0.0.0:19092
+       KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka-1:9092,EXTERNAL://localhost:19092
        KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
-       KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT
+       KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT,EXTERNAL:PLAINTEXT
        #KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka-1:9093,2@kafka-2:9093,3@kafka-3:9093
        KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka-1:9093,2@kafka-2:9095,3@kafka-3:9097
        KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 3
@@ -185,7 +185,7 @@ services:
     volumes:
        - kafka-1-data:/var/lib/kafka/data
     ports:
-       - "9092:9092"
+       - "19092:19092"
 
   kafka-2:
     image: confluentinc/cp-kafka:7.6.0
@@ -193,16 +193,18 @@ services:
     environment:
        KAFKA_NODE_ID: 2
        KAFKA_PROCESS_ROLES: broker,controller
-       KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9094,CONTROLLER://0.0.0.0:9095
-       KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka-2:9094
+       KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9094,CONTROLLER://0.0.0.0:9095,EXTERNAL://0.0.0.0:19094
+       KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka-2:9094,EXTERNAL://localhost:19094
        KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
-       KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT
+       KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT,EXTERNAL:PLAINTEXT
        KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka-1:9093,2@kafka-2:9095,3@kafka-3:9097
        #KAFKA_CLUSTER_ID: spotify-cluster-001
        CLUSTER_ID: mccdtQavTYu3vGON6qTkMg
        KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
     volumes:
        - kafka-2-data:/var/lib/kafka/data
+    ports:
+       - "19094:19094"
 
   kafka-3:
     image: confluentinc/cp-kafka:7.6.0
@@ -210,16 +212,18 @@ services:
     environment:
        KAFKA_NODE_ID: 3
        KAFKA_PROCESS_ROLES: broker,controller
-       KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9096,CONTROLLER://0.0.0.0:9097
-       KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka-3:9096
+       KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9096,CONTROLLER://0.0.0.0:9097,EXTERNAL://0.0.0.0:19096
+       KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka-3:9096,EXTERNAL://localhost:19096
        KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
-       KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT
+       KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT,EXTERNAL:PLAINTEXT
        KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka-1:9093,2@kafka-2:9095,3@kafka-3:9097
        #KAFKA_CLUSTER_ID: spotify-cluster-001
        CLUSTER_ID: mccdtQavTYu3vGON6qTkMg
        KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
     volumes:
        - kafka-3-data:/var/lib/kafka/data
+    ports:
+       - "19096:19096"
 
   kafka-ui:
     image: provectuslabs/kafka-ui:latest
@@ -266,6 +270,12 @@ services:
       - "8888:8888"
     volumes:
       - ./spark_jobs:/opt/spark-jobs
+    # Installe les libs Python nécessaires aux jobs (écriture Redis + Postgres)
+    # AVANT de lancer le master, pour que la démo fonctionne après un simple
+    # `docker compose up` sans pip install manuel.
+    command: >
+      bash -c "pip install redis psycopg2-binary &&
+      /opt/bitnami/scripts/spark/run.sh"
 
   spark-worker-1:
     image: bitnamilegacy/spark:3.5.0
@@ -278,6 +288,10 @@ services:
       - spark-master
     volumes:
       - ./spark_jobs:/opt/spark-jobs
+    # Le worker exécute réellement le foreachBatch → il a besoin des mêmes libs.
+    command: >
+      bash -c "pip install redis psycopg2-binary &&
+      /opt/bitnami/scripts/spark/run.sh"
 
 volumes:
   postgres-data:
