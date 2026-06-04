@@ -182,7 +182,7 @@ def compute_top_tracks_tumbling(events_df):
     # au-delà ferme la fenêtre". Sans ça, Spark garderait l'état de toutes
     # les fenêtres en mémoire à l'infini.
     aggregated = (
-        events_df.withWatermark("event_time", "2 minutes")
+        events_df.withWatermark("event_time", "10 minutes")
         .groupBy(
             F.window(F.col("event_time"), "5 minutes"),
             F.col("track_id"),
@@ -258,6 +258,10 @@ def compute_top_tracks_tumbling(events_df):
                     template="(%s, %s, %s, %s, %s, NOW())",
                 )
             conn.commit()
+            print(f"[batch {batch_id}] top 10 UPSERT dans realtime_top_tracks")
+        except Exception as e:
+            conn.rollback()
+            print(f"[batch {batch_id}] FK violation ignorée : {e}")
         finally:
             conn.close()
 
@@ -295,8 +299,8 @@ def compute_genre_listeners_sliding(events_df, catalog_df):
 
     aggregated = (
         enriched.withWatermark(
-            "event_time", "2 minutes"
-        )  # watermark minimal (#15 affinera)
+            "event_time", "10 minutes"
+        )
         .groupBy(
             # 2 arguments = sliding : taille de fenêtre puis pas de glissement
             F.window(F.col("event_time"), "15 minutes", "5 minutes"),
@@ -358,6 +362,44 @@ def compute_genre_listeners_sliding(events_df, catalog_df):
     )
     return query
 
+# ─────────────────────────────────────────────────────────────
+# LATE EVENTS
+# ─────────────────────────────────────────────────────────────
+
+def detect_late_events(events_df):
+    """
+    Détecte les events tardifs : écart > 10 min entre event_time
+    et kafka_timestamp. Les route vers le topic late_listening_events
+    pour retraitement par le DAG #20.
+    """
+    late_events = (
+        events_df
+        .filter(
+            (F.col("kafka_timestamp").cast("long") -
+            F.col("event_time").cast("long")) > 600
+        )
+        .select(
+            F.to_json(F.struct(
+                F.col("event_id"),
+                F.col("user_id"),
+                F.col("track_id"),
+                F.col("event_time"),
+                F.col("kafka_timestamp"),
+                F.col("geo_country"),
+            )).alias("value")
+        )
+    )
+
+    query = (
+        late_events.writeStream
+        .format("kafka")
+        .option("kafka.bootstrap.servers", KAFKA_BOOTSTRAP)
+        .option("topic", "late_listening_events")
+        .option("checkpointLocation", f"{CHECKPOINT_PATH}/late_events")
+        .trigger(processingTime="30 seconds")
+        .start()
+    )
+    return query
 
 # ─────────────────────────────────────────────────────────────
 # POINT D'ENTRÉE
@@ -408,9 +450,11 @@ def main():
     # Ticket #14 : les deux agrégations tournent EN PARALLÈLE de la console.
     query_top_tracks = compute_top_tracks_tumbling(events_df)
     query_genres = compute_genre_listeners_sliding(events_df, catalog_df)
+    query_late = detect_late_events(events_df)
 
     # On attend l'arrêt de n'importe laquelle des 3 queries (toutes tournent en continu)
     spark.streams.awaitAnyTermination()
+
 
 
 if __name__ == "__main__":
