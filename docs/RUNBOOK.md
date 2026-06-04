@@ -116,20 +116,29 @@ self.redis.ltrim(channel, 0, 99_999)   # plafond anti-débordement
 
 ---
 
-### INC-09 — Tous les events partent en DLQ (`unknown_track`)
+### INC-09 — Spark ne résout pas le hostname PostgreSQL
 
-**Symptômes :** `listening_events` reste vide, et `SELECT error_type, COUNT(*) FROM dead_letter_events GROUP BY error_type` montre un grand nombre d'`unknown_track`.
+**Symptômes :** `java.net.UnknownHostException: postgres` au démarrage du job Spark.
 
-**Cause :** Le simulateur générait des `track_id` aléatoires (`uuid.uuid4()`) qui ne correspondaient à aucune track du catalogue. À l'étape d'enrichissement, la jointure `listening_events.track_id = tracks.id` ne matchait jamais → tout partait en DLQ.
+**Cause :** Le conteneur Spark (bitnamilegacy) ne résout pas les hostnames Docker
+même s'il est sur le même réseau que PostgreSQL.
 
-**Résolution :** Charger les vrais `track_id` depuis PostgreSQL au démarrage du simulateur :
-```python
-# _load_catalog_from_postgres() : SELECT id FROM tracks LIMIT 1000
-# Le simulateur tire ses track_id depuis cette liste réelle.
+**Résolution :**
+Ajouter `extra_hosts` dans `docker-compose.yml` pour les services Spark :
+```yaml
+spark-master:
+  extra_hosts:
+    - "postgres:172.19.0.5"
+
+spark-worker-1:
+  extra_hosts:
+    - "postgres:172.19.0.5"
 ```
+Attention : l'IP peut changer après `docker compose down/up`.
+Vérifier avec : `docker inspect data_pipelines-postgres-1 | grep IPAddress`
 
-**Prévention :** Toujours peupler le catalogue (`catalog_ingestion`) AVANT de lancer le simulateur, et s'assurer que le simulateur référence des IDs existants.
-
+**Prévention :** Utiliser un réseau Docker explicite avec des IPs statiques
+pour les services critiques.
 ---
 
 ### INC-10 — Nouveau DAGRun bloqué en "queued" indéfiniment
