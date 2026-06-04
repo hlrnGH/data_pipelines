@@ -6,7 +6,7 @@ les tendances musicales temps réel.
 
 Outputs :
     - PostgreSQL → table `realtime_top_tracks` (top 10 par fenêtre de 5 min)
-    - Redis      → clé `top_tracks:live` (top genres par sliding window)
+    - Redis      → clé `genre_listeners:live` (auditeurs uniques par genre, sliding window)
 
 Lancement :
     spark-submit \\
@@ -120,6 +120,9 @@ def read_kafka_stream(spark: SparkSession):
         .option("subscribe", KAFKA_TOPIC)
         .option("startingOffsets", "earliest")
         .option("failOnDataLoss", "false")
+        # Ticket #16 — exactly-once : ne lire que les messages committés
+        # (jamais ceux d'une transaction Kafka en cours ou avortée).
+        .option("kafka.isolation.level", "read_committed")
         .load()
     )
 
