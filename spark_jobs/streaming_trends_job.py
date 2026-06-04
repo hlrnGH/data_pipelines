@@ -258,6 +258,10 @@ def compute_top_tracks_tumbling(events_df):
                     template="(%s, %s, %s, %s, %s, NOW())",
                 )
             conn.commit()
+            print(f"[batch {batch_id}] top 10 UPSERT dans realtime_top_tracks")
+        except Exception as e:
+            conn.rollback()
+            print(f"[batch {batch_id}] FK violation ignorée : {e}")
         finally:
             conn.close()
 

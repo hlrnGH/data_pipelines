@@ -38,6 +38,9 @@ services:
 
   postgres:
     image: postgres:15
+    networks:
+      default:
+        ipv4_address: 172.19.0.50
     environment:
       POSTGRES_USER: airflow
       POSTGRES_PASSWORD: airflow
@@ -161,106 +164,104 @@ services:
         echo "Airflow initialisé avec succès"
 
   # ─────────────────────────────────────────
-  # KAFKA (Phase 2 — décommenter jeudi matin)
+  # KAFKA
   # ─────────────────────────────────────────
 
   kafka-1:
     image: confluentinc/cp-kafka:7.6.0
     hostname: kafka-1
     environment:
-       KAFKA_NODE_ID: 1
-       KAFKA_PROCESS_ROLES: broker,controller
-       KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093,EXTERNAL://0.0.0.0:19092
-       KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka-1:9092,EXTERNAL://localhost:19092
-       KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
-       KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT,EXTERNAL:PLAINTEXT
-       #KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka-1:9093,2@kafka-2:9093,3@kafka-3:9093
-       KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka-1:9093,2@kafka-2:9095,3@kafka-3:9097
-       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 3
-       KAFKA_DEFAULT_REPLICATION_FACTOR: 3
-       KAFKA_MIN_INSYNC_REPLICAS: 2
-       #KAFKA_CLUSTER_ID: spotify-cluster-001
-       CLUSTER_ID: mccdtQavTYu3vGON6qTkMg
-       KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093,EXTERNAL://0.0.0.0:19092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka-1:9092,EXTERNAL://localhost:19092
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT,EXTERNAL:PLAINTEXT
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka-1:9093,2@kafka-2:9095,3@kafka-3:9097
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 3
+      KAFKA_DEFAULT_REPLICATION_FACTOR: 3
+      KAFKA_MIN_INSYNC_REPLICAS: 2
+      CLUSTER_ID: mccdtQavTYu3vGON6qTkMg
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
     volumes:
-       - kafka-1-data:/var/lib/kafka/data
+      - kafka-1-data:/var/lib/kafka/data
     ports:
-       - "19092:19092"
+      - "19092:19092"
 
   kafka-2:
     image: confluentinc/cp-kafka:7.6.0
     hostname: kafka-2
     environment:
-       KAFKA_NODE_ID: 2
-       KAFKA_PROCESS_ROLES: broker,controller
-       KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9094,CONTROLLER://0.0.0.0:9095,EXTERNAL://0.0.0.0:19094
-       KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka-2:9094,EXTERNAL://localhost:19094
-       KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
-       KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT,EXTERNAL:PLAINTEXT
-       KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka-1:9093,2@kafka-2:9095,3@kafka-3:9097
-       #KAFKA_CLUSTER_ID: spotify-cluster-001
-       CLUSTER_ID: mccdtQavTYu3vGON6qTkMg
-       KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_NODE_ID: 2
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9094,CONTROLLER://0.0.0.0:9095,EXTERNAL://0.0.0.0:19094
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka-2:9094,EXTERNAL://localhost:19094
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT,EXTERNAL:PLAINTEXT
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka-1:9093,2@kafka-2:9095,3@kafka-3:9097
+      CLUSTER_ID: mccdtQavTYu3vGON6qTkMg
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
     volumes:
-       - kafka-2-data:/var/lib/kafka/data
+      - kafka-2-data:/var/lib/kafka/data
     ports:
-       - "19094:19094"
+      - "19094:19094"
 
   kafka-3:
     image: confluentinc/cp-kafka:7.6.0
     hostname: kafka-3
     environment:
-       KAFKA_NODE_ID: 3
-       KAFKA_PROCESS_ROLES: broker,controller
-       KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9096,CONTROLLER://0.0.0.0:9097,EXTERNAL://0.0.0.0:19096
-       KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka-3:9096,EXTERNAL://localhost:19096
-       KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
-       KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT,EXTERNAL:PLAINTEXT
-       KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka-1:9093,2@kafka-2:9095,3@kafka-3:9097
-       #KAFKA_CLUSTER_ID: spotify-cluster-001
-       CLUSTER_ID: mccdtQavTYu3vGON6qTkMg
-       KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_NODE_ID: 3
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9096,CONTROLLER://0.0.0.0:9097,EXTERNAL://0.0.0.0:19096
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka-3:9096,EXTERNAL://localhost:19096
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT,EXTERNAL:PLAINTEXT
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka-1:9093,2@kafka-2:9095,3@kafka-3:9097
+      CLUSTER_ID: mccdtQavTYu3vGON6qTkMg
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
     volumes:
-       - kafka-3-data:/var/lib/kafka/data
+      - kafka-3-data:/var/lib/kafka/data
     ports:
-       - "19096:19096"
+      - "19096:19096"
 
   kafka-ui:
     image: provectuslabs/kafka-ui:latest
     depends_on:
-       - kafka-1
-       - kafka-2
-       - kafka-3
+      - kafka-1
+      - kafka-2
+      - kafka-3
     ports:
-       - "8090:8080"
+      - "8090:8080"
     environment:
-       KAFKA_CLUSTERS_0_NAME: spotify-local
-       KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka-1:9092,kafka-2:9094,kafka-3:9096
+      KAFKA_CLUSTERS_0_NAME: spotify-local
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka-1:9092,kafka-2:9094,kafka-3:9096
 
   kafka-init:
     image: confluentinc/cp-kafka:7.6.0
     depends_on:
-       - kafka-1
-       - kafka-2
-       - kafka-3
+      - kafka-1
+      - kafka-2
+      - kafka-3
     entrypoint: >
-       /bin/sh -c "
-       sleep 30;
-       kafka-topics --create --if-not-exists --bootstrap-server kafka-1:9092 --topic listening_events --partitions 6 --replication-factor 3 --config retention.ms=604800000;
-       kafka-topics --create --if-not-exists --bootstrap-server kafka-1:9092 --topic p2p_network_events --partitions 6 --replication-factor 3;
-       kafka-topics --create --if-not-exists --bootstrap-server kafka-1:9092 --topic catalog_updates --partitions 3 --replication-factor 3 --config cleanup.policy=compact;
-       kafka-topics --create --if-not-exists --bootstrap-server kafka-1:9092 --topic enriched_events --partitions 6 --replication-factor 3;
-       kafka-topics --create --if-not-exists --bootstrap-server kafka-1:9092 --topic fraud_alerts --partitions 3 --replication-factor 3;
-       kafka-topics --create --if-not-exists --bootstrap-server kafka-1:9092 --topic late_listening_events --partitions 3 --replication-factor 3;
-       echo 'Topics Kafka créés';
-       "
+      /bin/sh -c "
+      sleep 30;
+      kafka-topics --create --if-not-exists --bootstrap-server kafka-1:9092 --topic listening_events --partitions 6 --replication-factor 3 --config retention.ms=604800000;
+      kafka-topics --create --if-not-exists --bootstrap-server kafka-1:9092 --topic p2p_network_events --partitions 6 --replication-factor 3;
+      kafka-topics --create --if-not-exists --bootstrap-server kafka-1:9092 --topic catalog_updates --partitions 3 --replication-factor 3 --config cleanup.policy=compact;
+      kafka-topics --create --if-not-exists --bootstrap-server kafka-1:9092 --topic enriched_events --partitions 6 --replication-factor 3;
+      kafka-topics --create --if-not-exists --bootstrap-server kafka-1:9092 --topic fraud_alerts --partitions 3 --replication-factor 3;
+      kafka-topics --create --if-not-exists --bootstrap-server kafka-1:9092 --topic late_listening_events --partitions 3 --replication-factor 3;
+      echo 'Topics Kafka créés';
+      "
 
   # ─────────────────────────────────────────
-  # SPARK (Phase 2 — décommenter jeudi matin)
+  # SPARK
   # ─────────────────────────────────────────
 
   spark-master:
     image: bitnamilegacy/spark:3.5.0
+    extra_hosts:
+      - "postgres:172.19.0.50"
     environment:
       SPARK_MODE: master
       SPARK_MASTER_PORT: 7077
@@ -268,17 +269,17 @@ services:
     ports:
       - "7077:7077"
       - "8888:8888"
+      - "4040:4040"
     volumes:
       - ./spark_jobs:/opt/spark-jobs
-    # Installe les libs Python nécessaires aux jobs (écriture Redis + Postgres)
-    # AVANT de lancer le master, pour que la démo fonctionne après un simple
-    # `docker compose up` sans pip install manuel.
     command: >
       bash -c "pip install redis psycopg2-binary &&
       /opt/bitnami/scripts/spark/run.sh"
 
   spark-worker-1:
     image: bitnamilegacy/spark:3.5.0
+    extra_hosts:
+      - "postgres:172.19.0.50"
     environment:
       SPARK_MODE: worker
       SPARK_MASTER_URL: spark://spark-master:7077
@@ -288,7 +289,6 @@ services:
       - spark-master
     volumes:
       - ./spark_jobs:/opt/spark-jobs
-    # Le worker exécute réellement le foreachBatch → il a besoin des mêmes libs.
     command: >
       bash -c "pip install redis psycopg2-binary &&
       /opt/bitnami/scripts/spark/run.sh"
@@ -300,3 +300,9 @@ volumes:
   kafka-1-data:
   kafka-2-data:
   kafka-3-data:
+
+networks:
+  default:
+    ipam:
+      config:
+        - subnet: 172.19.0.0/16
