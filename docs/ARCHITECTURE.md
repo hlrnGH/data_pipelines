@@ -155,6 +155,6 @@ Le Top 50 live, les alertes fraude et les tendances temps réel (`realtime_top_t
 
 - **Lundi** : Les chemins avec espaces bloquent les mounts Docker sur Mac. Toujours travailler dans un dossier sans espace (`~/data_pipelines`). Le WiFi de la salle est saturé quand tout le monde pull les images en même temps — prévoir un hotspot.
 - **Mardi** : L'ordre d'activation des DAGs compte — `aggregation_pipeline` attend `streaming_events_pipeline`. Toujours activer dans l'ordre de la chaîne de dépendances.
-- **Mercredi** : Spark ne résout pas le hostname `postgres` depuis son conteneur Docker (bitnamilegacy). Les conteneurs sont sur le même réseau mais le DNS interne ne propage pas correctement. Fix : ajouter `extra_hosts: postgres:<IP>` dans docker-compose pour les services Spark.
-- **Jeudi** : En cours...
+- **Mercredi** : Kafka ne résout pas `kafka-1:9092` depuis le terminal local — hostname interne Docker. Fix : lancer le simulateur depuis le conteneur `airflow-worker`. Variable `REDIS_URL` codée en dur sur `localhost` dans le simulateur sur `main` — fix `os.getenv` sur `feat/kafka-streaming`. Image Docker `bitnami/spark:3.5` indisponible — remplacée par `bitnamilegacy/spark:3.5.0`.
+- **Jeudi** : Spark ne résout pas le hostname `postgres` depuis son conteneur (bitnamilegacy) malgré le même réseau Docker. Fix permanent : IP statique `172.19.0.50` pour postgres + `extra_hosts` dans docker-compose pour spark-master et spark-worker-1.
 - **Vendredi** : En cours...
