@@ -224,6 +224,64 @@ docker logs spark-master | grep "checkpoint"
 
 ---
 
+### INC-12 — `realtime_top_tracks` reste vide alors que le job Spark tourne
+
+**Symptômes :** Le job Spark tourne sans erreur, mais `SELECT * FROM realtime_top_tracks` ne retourne rien.
+
+**Diagnostic :**
+```bash
+# 1. Le topic reçoit-il des events ? (Kafka UI localhost:8090 → topic listening_events)
+# 2. event_time est-il bien parsé (non NULL) ? Regarder la colonne dans la sortie console du job.
+# 3. Le catalogue est-il peuplé ? (sinon le simulateur tourne en track_id aléatoires)
+docker exec data_pipelines-postgres-1 psql -U spotify -d spotify -c "SELECT count(*) FROM tracks;"
+```
+
+**Cause :** Le simulateur produit `datetime.utcnow().isoformat() + "Z"`, qui **omet les microsecondes** quand elles valent 0. Un pattern de parsing fixe (`.SSSSSS`) échoue sur les timestamps sans fraction → `event_time` NULL → aucune fenêtre ne se forme.
+
+**Résolution :** Parser avec un `coalesce` tolérant de deux formats (avec et sans microsecondes), côté Spark — ne jamais imposer un format au simulateur (consommé par plusieurs jobs) :
+```python
+F.coalesce(
+    F.to_timestamp(col, "yyyy-MM-dd'T'HH:mm:ss.SSSSSS"),
+    F.to_timestamp(col, "yyyy-MM-dd'T'HH:mm:ss"),
+)
+```
+
+**Prévention :** Côté consommateur, toujours parser les timestamps ISO de façon tolérante aux fractions de seconde variables.
+
+---
+
+### INC-13 — Crash `IntegrityError` / violation de clé primaire à l'écriture Postgres
+
+**Symptômes :** Le foreachBatch crashe au 2ᵉ batch : `duplicate key value violates unique constraint` sur `realtime_top_tracks_pkey`.
+
+**Cause :** Avec `outputMode("update")`, Spark réémet une même fenêtre à chaque batch tant qu'elle évolue. Un `write.mode("append")` tente alors de réinsérer une PK `(window_start, track_id)` déjà présente.
+
+**Résolution :** Remplacer l'append par un **UPSERT** dans le foreachBatch (psycopg2, installé sur spark-master) :
+```sql
+INSERT INTO realtime_top_tracks (...) VALUES %s
+ON CONFLICT (window_start, track_id) DO UPDATE SET
+    stream_count = EXCLUDED.stream_count, ...
+```
+
+**Prévention :** En `outputMode("update")`, toute écriture vers une table à PK doit être idempotente (UPSERT), jamais un append simple.
+
+---
+
+### INC-14 — Job Spark instable / checkpoints qui se corrompent entre queries
+
+**Symptômes :** Comportement non déterministe avec plusieurs queries en parallèle ; une query refuse de démarrer ou rejoue des offsets.
+
+**Cause :** Plusieurs `writeStream` partageaient un `checkpointLocation` imbriqué (une query sur la racine, les autres sur des sous-dossiers de cette racine). Chaque query doit avoir un répertoire de checkpoint **dédié et non imbriqué**.
+
+**Résolution :** Un sous-dossier frère par query :
+.../streaming_trends/console
+.../streaming_trends/top_tracks
+.../streaming_trends/genre_listeners
+
+**Prévention :** Un checkpointLocation unique par query, jamais imbriqué dans celui d'une autre.
+
+---
+
 ## Chaos Engineering — Résultats
 
 > Compléter pendant l'issue #25 (vendredi)
