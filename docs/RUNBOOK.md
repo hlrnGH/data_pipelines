@@ -282,6 +282,63 @@ ON CONFLICT (window_start, track_id) DO UPDATE SET
 
 ---
 
+## Exactly-once (ticket #16) — Procédure de vérification
+
+### Objectif
+Prouver qu'un redémarrage du job Spark ne crée **aucun doublon** dans le sink,
+grâce à la reprise depuis le checkpoint (offsets Kafka mémorisés) combinée à
+l'écriture idempotente (UPSERT `ON CONFLICT`).
+
+### Configuration en place
+- **Producteur** (`src/p2p_simulator/simulator.py`) : `enable.idempotence=True`,
+  `acks=all` → pas de doublon ni de perte côté publication Kafka.
+- **Consommateur Spark** (`read_kafka_stream`) : `kafka.isolation.level=read_committed`
+  → ne lit que les messages committés.
+- **Checkpoints sur MinIO** : `s3a://spotify-checkpoints/streaming_trends/{console,top_tracks,genre_listeners}`
+  → au redémarrage, Spark reprend aux offsets exacts déjà traités.
+- **Sink idempotent** : UPSERT `ON CONFLICT (window_start, track_id) DO UPDATE`
+  → un batch rejoué met à jour la ligne, ne la duplique pas.
+
+### Note sur le critère officiel
+L'énoncé cite `SELECT COUNT(*) - COUNT(DISTINCT event_id) FROM listening_events`.
+Or `listening_events` est alimentée par le **batch** Phase 1 (idempotent via
+`ON CONFLICT (id) DO NOTHING`) et n'a pas de colonne `event_id` (sa PK est `id`).
+Le flux **streaming** du ticket #16 alimente `realtime_top_tracks`, dont la clé
+d'unicité est `(window_start, track_id)`. On valide donc l'absence de doublons
+sur cette table, qui est celle réellement écrite par le job Spark. La Phase 1
+couvre par ailleurs le critère littéral sur `listening_events`.
+
+### Procédure (test stop/relance)
+```powershell
+# 1. Simulateur + job Spark tournent. Laisser se remplir ~2 min.
+
+# 2. Snapshot AVANT : nombre de lignes vs nombre de clés uniques
+docker exec data_pipelines-postgres-1 psql -U spotify -d spotify -c "SELECT COUNT(*) AS lignes, COUNT(DISTINCT (window_start, track_id)) AS cles_uniques FROM realtime_top_tracks;"
+
+# 3. Arrêter le job Spark (Ctrl+C dans son terminal), attendre 2 min.
+#    Le simulateur continue de publier dans Kafka pendant ce temps.
+#    NB : Ctrl+C produit un Py4JError sur awaitAnyTermination — c'est l'arrêt
+#    manuel attendu (arrêt gracieux via stopGracefullyOnShutdown), pas un crash.
+
+# 4. Relancer le MÊME job (même commande spark-submit).
+#    Spark relit le checkpoint et reprend aux offsets déjà traités.
+
+# 5. Laisser tourner ~1 min, puis snapshot APRÈS :
+docker exec data_pipelines-postgres-1 psql -U spotify -d spotify -c "SELECT COUNT(*) - COUNT(DISTINCT (window_start, track_id)) AS doublons FROM realtime_top_tracks;"
+```
+
+### Critère de validation
+`doublons = 0`. Aucune ligne dupliquée sur `(window_start, track_id)` malgré
+l'arrêt/relance : le rejeu éventuel d'un batch est absorbé par l'UPSERT.
+
+### Résultat observé (run de validation)
+- AVANT : 456 lignes / 456 clés uniques (puis 474/474, simulateur actif).
+- Coupure Spark 2 min (simulateur a continué de publier : events 700 → 800).
+- Relance : reprise depuis checkpoint, rattrapage des events de la coupure.
+- APRÈS : `doublons = 0`. ✅
+
+---
+
 ## Chaos Engineering — Résultats
 
 > Compléter pendant l'issue #25 (vendredi)
