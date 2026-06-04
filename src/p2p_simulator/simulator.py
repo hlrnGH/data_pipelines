@@ -43,7 +43,7 @@ logger = logging.getLogger("p2p_simulator")
 
 
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/1")
-KAFKA_BOOTSTRAP = "kafka-1:9092"       # Phase 2
+KAFKA_BOOTSTRAP = os.getenv("KAFKA_BOOTSTRAP", "localhost:19092")  # hors Docker → listener EXTERNAL de kafka-1
 
 # Connexion PostgreSQL pour charger les vrais track_id du catalogue.
 # Le simulateur tourne hors Docker → on passe par localhost:5432.

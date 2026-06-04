@@ -93,6 +93,79 @@ docker compose up -d
 
 ---
 
+### INC-08 — Simulateur P2P : les events n'arrivent jamais dans PostgreSQL
+
+**Symptômes :** Le simulateur tourne et publie des events, mais `SELECT COUNT(*) FROM listening_events` reste à 0 après le run de `streaming_events_pipeline`.
+
+**Diagnostic :**
+```bash
+# Vérifier si la liste Redis se remplit
+docker exec -it data_pipelines-redis-1 redis-cli -n 1 LLEN listening_events
+```
+
+**Cause :** Le simulateur publiait uniquement en Redis **pub/sub** (`redis.publish`). Le pub/sub ne conserve rien : si aucun consommateur n'écoute au moment exact de la publication, l'event est perdu. Or `streaming_events_pipeline` est un batch qui ne lit que quelques secondes toutes les 5 min → il ratait la quasi-totalité des events.
+
+**Résolution :** Ajouter une publication dans une **liste Redis** persistante en plus du pub/sub :
+```python
+self.redis.publish(channel, payload)   # temps réel
+self.redis.lpush(channel, payload)     # persistance (lu par le DAG via rpop)
+self.redis.ltrim(channel, 0, 99_999)   # plafond anti-débordement
+```
+
+**Prévention :** Pour qu'un batch consomme des events, toujours les stocker dans une structure persistante (liste Redis, Kafka), jamais en pub/sub seul.
+
+---
+
+### INC-09 — Tous les events partent en DLQ (`unknown_track`)
+
+**Symptômes :** `listening_events` reste vide, et `SELECT error_type, COUNT(*) FROM dead_letter_events GROUP BY error_type` montre un grand nombre d'`unknown_track`.
+
+**Cause :** Le simulateur générait des `track_id` aléatoires (`uuid.uuid4()`) qui ne correspondaient à aucune track du catalogue. À l'étape d'enrichissement, la jointure `listening_events.track_id = tracks.id` ne matchait jamais → tout partait en DLQ.
+
+**Résolution :** Charger les vrais `track_id` depuis PostgreSQL au démarrage du simulateur :
+```python
+# _load_catalog_from_postgres() : SELECT id FROM tracks LIMIT 1000
+# Le simulateur tire ses track_id depuis cette liste réelle.
+```
+
+**Prévention :** Toujours peupler le catalogue (`catalog_ingestion`) AVANT de lancer le simulateur, et s'assurer que le simulateur référence des IDs existants.
+
+---
+
+### INC-10 — Nouveau DAGRun bloqué en "queued" indéfiniment
+
+**Symptômes :** Un run reste en `queued`, ne démarre jamais, et bloque tous les runs suivants.
+
+**Diagnostic :**
+```bash
+docker exec data_pipelines-airflow-scheduler-1 airflow dags list-runs -d <dag_id>
+# Chercher un run "queued" avec une execution_date dans le futur
+```
+
+**Cause :** Un run avait été déclenché avec une `execution_date` dans le futur (ex : demain). Airflow ne l'exécute jamais mais il occupe le slot `max_active_runs=1` du DAG → tous les autres runs attendent derrière.
+
+**Résolution :** Supprimer le run fantôme via l'UI (vue Grid → clic sur le run → Delete) ou en CLI selon la version d'Airflow. Le slot se libère et les runs en attente démarrent.
+
+**Prévention :** Ne jamais déclencher un run avec `--exec-date` dans le futur.
+
+---
+
+### INC-11 — `daily_streams` vide alors que `listening_events` est plein
+
+**Symptômes :** `aggregation_pipeline` passe `success`, mais `SELECT * FROM daily_streams` ne retourne rien.
+
+**Cause :** Un DAG Airflow agrège par défaut la période `data_interval_start`, qui correspond au **jour précédent** l'`execution_date` (un run du 3 juin agrège le 2 juin). Si les events sont datés d'aujourd'hui mais que le run cible la veille, la requête `WHERE DATE(timestamp) = <veille>` ne trouve rien. **Ce n'est pas un bug** — c'est le comportement standard d'Airflow.
+
+**Diagnostic :**
+```bash
+# Comparer la date des events avec la date ciblée par le run
+docker exec -it data_pipelines-postgres-1 psql -U spotify -d spotify -c "SELECT DATE(timestamp), COUNT(*) FROM listening_events GROUP BY DATE(timestamp);"
+```
+
+**Résolution :** Déclencher le run avec une `execution_date` telle que `data_interval_start` tombe sur la date des events (un run daté de J+1 agrège J).
+
+---
+
 ## Incidents Phase 2 — Kafka / Spark
 
 ### INC-04 — Consumer lag Kafka qui explose
@@ -148,6 +221,64 @@ docker logs spark-master | grep "checkpoint"
 
 **Résolution :**
 → À compléter par votre groupe
+
+---
+
+### INC-12 — `realtime_top_tracks` reste vide alors que le job Spark tourne
+
+**Symptômes :** Le job Spark tourne sans erreur, mais `SELECT * FROM realtime_top_tracks` ne retourne rien.
+
+**Diagnostic :**
+```bash
+# 1. Le topic reçoit-il des events ? (Kafka UI localhost:8090 → topic listening_events)
+# 2. event_time est-il bien parsé (non NULL) ? Regarder la colonne dans la sortie console du job.
+# 3. Le catalogue est-il peuplé ? (sinon le simulateur tourne en track_id aléatoires)
+docker exec data_pipelines-postgres-1 psql -U spotify -d spotify -c "SELECT count(*) FROM tracks;"
+```
+
+**Cause :** Le simulateur produit `datetime.utcnow().isoformat() + "Z"`, qui **omet les microsecondes** quand elles valent 0. Un pattern de parsing fixe (`.SSSSSS`) échoue sur les timestamps sans fraction → `event_time` NULL → aucune fenêtre ne se forme.
+
+**Résolution :** Parser avec un `coalesce` tolérant de deux formats (avec et sans microsecondes), côté Spark — ne jamais imposer un format au simulateur (consommé par plusieurs jobs) :
+```python
+F.coalesce(
+    F.to_timestamp(col, "yyyy-MM-dd'T'HH:mm:ss.SSSSSS"),
+    F.to_timestamp(col, "yyyy-MM-dd'T'HH:mm:ss"),
+)
+```
+
+**Prévention :** Côté consommateur, toujours parser les timestamps ISO de façon tolérante aux fractions de seconde variables.
+
+---
+
+### INC-13 — Crash `IntegrityError` / violation de clé primaire à l'écriture Postgres
+
+**Symptômes :** Le foreachBatch crashe au 2ᵉ batch : `duplicate key value violates unique constraint` sur `realtime_top_tracks_pkey`.
+
+**Cause :** Avec `outputMode("update")`, Spark réémet une même fenêtre à chaque batch tant qu'elle évolue. Un `write.mode("append")` tente alors de réinsérer une PK `(window_start, track_id)` déjà présente.
+
+**Résolution :** Remplacer l'append par un **UPSERT** dans le foreachBatch (psycopg2, installé sur spark-master) :
+```sql
+INSERT INTO realtime_top_tracks (...) VALUES %s
+ON CONFLICT (window_start, track_id) DO UPDATE SET
+    stream_count = EXCLUDED.stream_count, ...
+```
+
+**Prévention :** En `outputMode("update")`, toute écriture vers une table à PK doit être idempotente (UPSERT), jamais un append simple.
+
+---
+
+### INC-14 — Job Spark instable / checkpoints qui se corrompent entre queries
+
+**Symptômes :** Comportement non déterministe avec plusieurs queries en parallèle ; une query refuse de démarrer ou rejoue des offsets.
+
+**Cause :** Plusieurs `writeStream` partageaient un `checkpointLocation` imbriqué (une query sur la racine, les autres sur des sous-dossiers de cette racine). Chaque query doit avoir un répertoire de checkpoint **dédié et non imbriqué**.
+
+**Résolution :** Un sous-dossier frère par query :
+.../streaming_trends/console
+.../streaming_trends/top_tracks
+.../streaming_trends/genre_listeners
+
+**Prévention :** Un checkpointLocation unique par query, jamais imbriqué dans celui d'une autre.
 
 ---
 
