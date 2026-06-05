@@ -70,8 +70,8 @@ main
 
 | Membre            | Tickets     |
 | ----------------- | ----------- |
-| Nassim (référent) | #1, #2, #10 |
-| Rodrigue          | #3, #4, #6  |
-| Omar              | #5, #7      |
+| Nassim (référent) | #1, #2, #10, #12, #15, #17, #18, #19, #20 |
+| Rodrigue          | #3, #4, #6, #11, #13  |
+| Omar              | #5, #7, #14, #16      |
 | Harold            | #8          |
-| Jiek              | #9          |
+| Jiek              | #9,          |
