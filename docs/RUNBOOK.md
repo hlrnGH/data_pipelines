@@ -317,6 +317,47 @@ d'unicité est `(window_start, track_id)`. On valide donc l'absence de doublons
 sur cette table, qui est celle réellement écrite par le job Spark. La Phase 1
 couvre par ailleurs le critère littéral sur `listening_events`.
 
+
+## INC-10 — Spark ne résout pas hostname `postgres`
+**Symptôme** : `UnknownHostException: postgres` dans les jobs Spark  
+**Cause** : L'image bitnamilegacy/spark:3.5.0 ne résout pas les hostnames Docker via DNS interne  
+**Fix** : IP statique `172.19.0.50` pour postgres + `extra_hosts: postgres:172.19.0.50` sur spark-master et spark-worker-1 dans docker-compose.yml + subnet `172.19.0.0/16`
+
+## INC-11 — FK violation dans streaming_trends_job
+**Symptôme** : `psycopg2.errors.ForeignKeyViolation` sur realtime_top_tracks  
+**Cause** : Les track_ids dans Kafka sont des anciens UUIDs après un `docker compose down/up` qui réinitialise PostgreSQL  
+**Fix** : Ajouter try/except + rollback dans `write_batch_to_postgres`
+
+## INC-12 — Mode late_events du simulateur inactif
+**Symptôme** : Aucun message dans `late_listening_events`  
+**Cause** : Le code mode late_events était commenté dans simulator.py  
+**Fix** : Décommenter les lignes 254-257 dans simulator.py + augmenter le délai à 15-60 min
+
+## INC-13 — Checkpoint incompatible après modification du job Spark
+**Symptôme** : `assertion failed: There are [2] sources in the checkpoint offsets and now there are [1] sources requested`  
+**Cause** : Le checkpoint sauvegarde le nombre de sources Kafka. Après suppression d'une source, le checkpoint est incompatible  
+**Fix** : Supprimer le dossier checkpoint dans MinIO avant de relancer
+
+## INC-14 — Colonne inexistante dans daily_streams
+**Symptôme** : `column "stream_count" does not exist`  
+**Cause** : La colonne s'appelle `total_streams` dans daily_streams  
+**Fix** : Remplacer `stream_count` par `total_streams` dans la requête SQL
+
+## INC-15 — Colonne inexistante dans listening_events
+**Symptôme** : `column "event_id" does not exist`  
+**Cause** : La table utilise `id` (auto-généré) et non `event_id`. La colonne `source_peer` s'appelle `source_peer_id`  
+**Fix** : Adapter les requêtes SQL et les INSERT en conséquence
+
+## INC-16 — Late events rejetés (duration_invalide)
+**Symptôme** : 0 events valides, 250 invalides avec reason=duration_invalide  
+**Cause** : Les messages Kafka de `late_listening_events` ne contiennent pas le champ `duration_ms`  
+**Fix** : Supprimer la vérification de durée dans validate_late_events
+
+## INC-17 — Faux doublons dans validate_late_events
+**Symptôme** : 0 events insérés malgré 250 events valides  
+**Cause** : Le dedup check compare les `event_id` Kafka contre `id` auto-généré de listening_events — faux positifs  
+**Fix** : Supprimer le dedup check dans validate_late_events
+
 ### Procédure (test stop/relance)
 ```powershell
 # 1. Simulateur + job Spark tournent. Laisser se remplir ~2 min.
